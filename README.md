@@ -1,4 +1,5 @@
-#AlpmFs
+# AlpmFs
+
 Display installed packages with pacman in directories
 
 ## install
