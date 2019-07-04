@@ -109,7 +109,7 @@ class AlpmFs(pyfuse3.Operations):
         entry.st_mtime_ns = stamp
         entry.st_gid = os.getgid()
         entry.st_uid = os.getuid()
-        entry.st_ino = inode + offset
+        entry.st_ino = offset
 
         return entry
 
@@ -151,32 +151,31 @@ class AlpmFs(pyfuse3.Operations):
             #    print('  node name', fh, pkg.name, 'offset:',start_id)
             # yay = 1198
             p = self.packages.handle.get_localdb().get_pkg(pkg.name)
-            offset = 100000
-            offset = offset +1
-            if start_id >= fh+offset:
+            offset = fh * 100000
+            if start_id >= offset:
                 return
             #print("create virtual files in", p.name)
-            if not pyfuse3.readdir_reply(token, f"{p.version}.version".encode(), await self.get_virtual_attr(fh, offset), fh+offset):
+            if not pyfuse3.readdir_reply(token, f"{p.version}.version".encode(), await self.get_virtual_attr(fh, offset), offset):
                 return
             offset += 1
-            if not pyfuse3.readdir_reply(token, f"{p.name}.name".encode(), await self.get_virtual_attr(fh, offset), fh+offset):
+            if not pyfuse3.readdir_reply(token, f"{p.name}.name".encode(), await self.get_virtual_attr(fh, offset), offset):
                 return
             offset += 1
-            if not pyfuse3.readdir_reply(token, f"{p.name}.description".encode(), await self.get_virtual_attr(fh, offset), fh+offset):
+            if not pyfuse3.readdir_reply(token, f"{p.name}.description".encode(), await self.get_virtual_attr(fh, offset), offset):
                 return
             # TOFIX : always local.db
             offset += 1
-            if not pyfuse3.readdir_reply(token, f"{p.db.name}.db".encode(), await self.get_virtual_attr(fh, offset), fh+offset):
+            if not pyfuse3.readdir_reply(token, f"{p.db.name}.db".encode(), await self.get_virtual_attr(fh, offset), offset):
                 return
             offset += 1
             label = "asdependency"
             if p.reason == 0:
                 label = "explicit"
-            if not pyfuse3.readdir_reply(token, f"install.{label}".encode(), await self.get_virtual_attr(fh, offset), fh+offset):
+            if not pyfuse3.readdir_reply(token, f"install.{label}".encode(), await self.get_virtual_attr(fh, offset), offset):
                 return
             if p.base and p.base != p.name:
                 offset += 1
-                if not pyfuse3.readdir_reply(token, f"{p.base}.base".encode(), await self.get_virtual_attr(fh, offset), fh+offset):
+                if not pyfuse3.readdir_reply(token, f"{p.base}.base".encode(), await self.get_virtual_attr(fh, offset), offset):
                     return
 
             # create sumlinks : Dependencies (and optionals ?)
@@ -190,7 +189,7 @@ class AlpmFs(pyfuse3.Operations):
                 mode.st_mode = (stat.S_IFLNK | 0o554)
                 mode.st_nlink = link.inode
                 #link.st_nlink += 1 # NO ! increment at all directory read !
-                if not pyfuse3.readdir_reply(token, f"{link.name}.dep".encode(), mode, fh+offset):
+                if not pyfuse3.readdir_reply(token, f"{link.name}.dep".encode(), mode, offset):
                     return
 
         return
@@ -213,8 +212,8 @@ class AlpmFs(pyfuse3.Operations):
         """if off >= 2048:
             print('   end of file ?',inode, 'start read at:', off)
             return b'' """
-        if inode > 100000:
-            inode = inode - 100000 -2
+        if inode > 90000:
+            inode = round(inode / 100000)
         print('   read real ', inode, off, size)
         pkg = self.packages.get_inode(inode)
         if not pkg:
