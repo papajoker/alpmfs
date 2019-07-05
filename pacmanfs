@@ -1,0 +1,17 @@
+#!/usr/bin/bash
+
+dir="${2:-$HOME/pacman}"
+echo "alpm dir : $dir"
+echo ""
+
+if [[ "$1" == "start" ]]; then
+    nohup ./pacmanfs.py "$dir" &
+fi
+
+if [[ "$1" == "stop" ]]; then
+    PID=$(ps -ef | grep -v "grep" | grep pacmanfs.py | awk '{print $2}')
+    if [ -n "$PID" ]; then
+        kill -9 $PID && sleep 1; fusermount -u "$dir"
+    fi
+    ls -l "$dir" | wc -l # for test
+fi
