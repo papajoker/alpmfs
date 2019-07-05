@@ -1,0 +1,17 @@
+[Unit]
+Description=pacmanFs
+After=multi-user.target
+
+[Service]
+Type=simple  
+ExecStart=/usr/bin/nohup /home/patrick/workspace/python/fuse/pacmanfs/pacmanfs.py "/home/patrick/pacman"
+Restart=always
+KillSignal=SIGINT
+SuccessExitStatus=SIGINT
+
+[Install]
+WantedBy=multi-user.target 
+
+
+#systemctl --user start pacmanfs
+#systemctl --user status pacmanfs

@@ -68,7 +68,7 @@ class AlpmFile():
 
     @property
     def st_mode(self):
-        return (stat.S_IFDIR | 0o554)
+        return (stat.S_IFDIR | 0o555)
 
 class AlpmLocal():
     def __init__(self):
@@ -136,7 +136,7 @@ class AlpmFs(pyfuse3.Operations):
             return await self.get_virtual_attr(vinode, inode, ctx)
         entry = pyfuse3.EntryAttributes()
         if inode < pyfuse3.ROOT_INODE+1:
-            entry.st_mode = (stat.S_IFDIR | 0o554)
+            entry.st_mode = (stat.S_IFDIR | 0o555)
             entry.st_size = 0
             stamp = int(time.time() * 1e9)
         else:
