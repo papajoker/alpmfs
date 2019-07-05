@@ -20,6 +20,7 @@ import pyfuse3
 #from pyfuse3 import FUSEError
 import trio
 from pyalpm import Handle
+from pycman import config
 
 try:
     import faulthandler
@@ -41,7 +42,7 @@ class Fields(Enum):
     def ext(self):
         return str(self.name).lower()
 
-    def set_filename(self, pkg):
+    def set_filename(self, pkg, node):
         """ virtual files : set file names """
         data = f"{pkg.name}.{self.ext()}"
         if self == self.VERSION:
@@ -49,19 +50,21 @@ class Fields(Enum):
         if self == self.BASE:
             data = f"{pkg.base}.{self.ext()}"
         if self == self.DB:
-            data = f"{pkg.db.name}.{self.ext()}"
+            data = f"{node.repo}.{self.ext()}"
         if self == self.INSTALL:
             label = "explicit" if pkg.reason == 0 else "asdependency"
             data = f"{label}.{self.ext()}"
         return data
 
 class AlpmFile():
-    def __init__(self, pkg, inode):
+    def __init__(self, pkg, inode, repo='local'):
         self.name = pkg.name
+        self.repo = repo
         self.st_time = pkg.installdate * 1e9
         self.st_size = pkg.isize
         self.inode = pyfuse3.ROOT_INODE + inode +1
         self.st_nlink = 0
+        #print(self.repo)
 
     @property
     def st_mode(self):
@@ -69,10 +72,20 @@ class AlpmFile():
 
 class AlpmLocal():
     def __init__(self):
-        self.handle = Handle('/', '/var/lib/pacman')
+        #self.handle = Handle('/', '/var/lib/pacman')
+        self.handle = config.init_with_config("/etc/pacman.conf")
         self.pkgs = []
         for i, pkg in enumerate(self.handle.get_localdb().pkgcache):
-            self.pkgs.append(AlpmFile(pkg, i))
+            pkg_repo = self._find(pkg.name)
+            self.pkgs.append(AlpmFile(pkg, i, pkg_repo))
+
+    def _find(self, pkg_name):
+        """find one package in db"""
+        for db_repo in self.handle.get_syncdbs():
+            pkg = db_repo.get_pkg(pkg_name)
+            if pkg:
+                return db_repo.name
+        return 'local'
 
     def get_inode(self, inode):
         r = [f for f in self.pkgs if f.inode == inode]
@@ -97,13 +110,13 @@ class AlpmLocal():
         if field_id == Fields.VERSION.value:
             return f"{p.version}\n"
         #print(dir(p))
-        reason = ''
+        reason = 'dependency'
         if p.reason == 0:
             reason = 'Explicitly installed'
         strtime = time.strftime("%a %d %b %Y %X %Z", time.localtime(p.installdate))
 
         data = f"#{field_id}\n"
-        data = f"{data}\n{p.name}\n{p.version}\n{p.desc}\n{p.url}\n\ninstalldate: {strtime}\nDb: {p.db.name}\nInstall reason: {reason}\nDependencies: \n{p.depends}\n"
+        data = f"{data}\n{p.name}\n{p.version}\n{p.desc}\n{p.url}\n\ninstalldate: {strtime}\nDb: {node.repo}\nInstall reason: {reason}\nDependencies: \n{p.depends}\n"
         if  p.optdepends:
             data += '\n optionals:'
             for opt in p.optdepends:
@@ -210,7 +223,7 @@ class AlpmFs(pyfuse3.Operations):
             for vfile in Fields:
                 if vfile == Fields.BASE and p.name == p.base:
                     continue
-                fname = vfile.set_filename(p).encode()
+                fname = vfile.set_filename(p, pkg).encode()
                 if not pyfuse3.readdir_reply(token, fname, await self.get_virtual_attr(fh, offset), offset):
                     return
                 offset += 1
@@ -252,13 +265,13 @@ class AlpmFs(pyfuse3.Operations):
         # TO_FIX : always local.db
         # TODO TO_FIX : read file only at first pass, second empty and 3° no acces !!!
         """
-        print('v-read', inode, off, size)
+        #log.info(f"v-read: inode:{inode} {off} {size}")
         inode, field_id = self.virtual_inode(inode)
-        print('   read real ', inode, 'field:', field_id, 'off', off, 'size', size)
+        #log.info(f"   read real {inode} field:{field_id} off:{off} size:{size}")
 
         pkg = self.packages.get_inode(inode)
         if not pkg:
-            print('   ERROR: file not found', inode)
+            #log.warning(f"   ERROR: file not found {inode}")
             return b''
 
         data = self.packages.display_file(pkg, field_id)
@@ -267,7 +280,7 @@ class AlpmFs(pyfuse3.Operations):
 
     async def open(self, inode, flags, ctx):
         if flags & os.O_RDWR or flags & os.O_WRONLY:
-            print("raise open", inode)
+            log.error(f"raise open {inode}")
             raise pyfuse3.FUSEError(errno.EPERM)
         return inode
 
