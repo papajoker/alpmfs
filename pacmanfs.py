@@ -9,7 +9,6 @@ run :
 '''
 
 import os
-import sys
 import time
 from pathlib import Path
 from argparse import ArgumentParser
@@ -40,7 +39,6 @@ class AlpmFile():
 
     @property
     def st_mode(self):
-        #return (stat.S_IFREG | 0o644)
         return (stat.S_IFDIR | 0o554)
 
 class AlpmLocal():
@@ -49,7 +47,6 @@ class AlpmLocal():
         self.pkgs = []
         for i, pkg in enumerate(self.handle.get_localdb().pkgcache):
             self.pkgs.append(AlpmFile(pkg, i))
-        #print(self.pkgs)
 
     def get_inode(self, inode):
         r = [f for f in self.pkgs if f.inode == inode]
@@ -74,6 +71,10 @@ class AlpmFs(pyfuse3.Operations):
         super(AlpmFs, self).__init__()
 
     async def getattr(self, inode, ctx=None):
+        """ return file attributes """
+        if inode > 90000:
+            vinode, _ = self.virtual_inode(inode)
+            return await self.get_virtual_attr(vinode, inode, ctx)
         entry = pyfuse3.EntryAttributes()
         if inode < pyfuse3.ROOT_INODE+1:
             entry.st_mode = (stat.S_IFDIR | 0o554)
@@ -119,15 +120,19 @@ class AlpmFs(pyfuse3.Operations):
             and symlinks !
         """
         name = Path(name.decode())
-        #print('lookup', parent_inode, name)
+        '''if parent_inode > 1:
+            inode, field_id = self.virtual_inode(parent_inode)
+            print('vinode', inode, 'field', field_id)'''
         if parent_inode > 1 and name.suffix == ".dep":
             name = name.stem
             #print('   lookup symlink ', parent_inode, name)
         pkg = self.packages.get_file(str(name))
         if not pkg:
-            print("   not found !!!", name)
+            '''print("   not found !!!", name)
+            entry = pyfuse3.EntryAttributes()
+            entry.st_ino = 0
+            return entry'''
             raise pyfuse3.FUSEError(errno.ENOENT)
-        #print("   found:", pkg.name)
         return await self.getattr(pkg.inode)
 
     async def opendir(self, inode, ctx):
@@ -186,7 +191,7 @@ class AlpmFs(pyfuse3.Operations):
                     return
                 offset += 1
                 mode = await self.getattr(link.inode)
-                mode.st_mode = (stat.S_IFLNK | 0o554)
+                mode.st_mode = (stat.S_IFLNK | 0o555)
                 mode.st_nlink = link.inode
                 #link.st_nlink += 1 # NO ! increment at all directory read !
                 if not pyfuse3.readdir_reply(token, f"{link.name}.dep".encode(), mode, offset):
@@ -201,6 +206,13 @@ class AlpmFs(pyfuse3.Operations):
             return f"{self.path}/{pkg.name}".encode()
         raise pyfuse3.FUSEError(errno.ENOENT)
 
+    @staticmethod
+    def virtual_inode(inode):
+        """ convert inode by inode_parent_package + field_id """
+        if inode > 90000:
+            return round(inode/100000), int(inode - (round(inode/100000)*100000))
+        return inode, None
+
     async def read(self, inode, off, size):
         """
         TODO: best display
@@ -212,9 +224,10 @@ class AlpmFs(pyfuse3.Operations):
         """if off >= 2048:
             print('   end of file ?',inode, 'start read at:', off)
             return b'' """
-        if inode > 90000:
-            inode = round(inode / 100000)
-        print('   read real ', inode, off, size)
+        inode, field_id = self.virtual_inode(inode)
+        print('   read real ', inode, 'field:', field_id, 'off', off, 'size', size)
+
+
         pkg = self.packages.get_inode(inode)
         if not pkg:
             print('   ERROR: file not found', inode)
@@ -244,12 +257,6 @@ class AlpmFs(pyfuse3.Operations):
         return inode
 
 """
-    async def access(self, inode, mode, ctx):
-        # Yeah, could be a function and has unused arguments
-        #pylint: disable=R0201,W0613
-        print('access', inode, mode)
-        return True
-
     async def statfs(self, ctx):
         '''Get file system statistics
         *ctx* will be a `RequestContext` instance.
