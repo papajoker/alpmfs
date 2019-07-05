@@ -202,11 +202,10 @@ class AlpmFs(pyfuse3.Operations):
             #    print('  node name', fh, pkg.name, 'offset:',start_id)
             # yay = 1198
             p = self.packages.handle.get_localdb().get_pkg(pkg.name)
-            print(dir(p))
             offset = fh * 100000
             if start_id >= offset:
                 return
-            
+
             # generate virtual files
             for vfile in Fields:
                 if vfile == Fields.BASE and p.name == p.base:
