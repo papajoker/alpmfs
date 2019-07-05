@@ -47,6 +47,8 @@ class Fields(Enum):
         if self == self.VERSION:
             data = f"{pkg.version}.{self.ext()}"
         if self == self.BASE:
+            data = f"{pkg.base}.{self.ext()}"
+        if self == self.DB:
             data = f"{pkg.db.name}.{self.ext()}"
         if self == self.INSTALL:
             label = "explicit" if pkg.reason == 0 else "asdependency"
@@ -88,7 +90,7 @@ class AlpmLocal():
             #raise pyfuse3.FUSEError(errno.ENOENT)
             return None # root ?
 
-    def display_file(self, node: AlpmLocal, field_id: int):
+    def display_file(self, node, field_id: int):
         p = self.handle.get_localdb().get_pkg(node.name)
 
         # for demo:
@@ -200,12 +202,15 @@ class AlpmFs(pyfuse3.Operations):
             #    print('  node name', fh, pkg.name, 'offset:',start_id)
             # yay = 1198
             p = self.packages.handle.get_localdb().get_pkg(pkg.name)
+            print(dir(p))
             offset = fh * 100000
             if start_id >= offset:
                 return
             
             # generate virtual files
             for vfile in Fields:
+                if vfile == Fields.BASE and p.name == p.base:
+                    continue
                 fname = vfile.set_filename(p).encode()
                 if not pyfuse3.readdir_reply(token, fname, await self.get_virtual_attr(fh, offset), offset):
                     return
