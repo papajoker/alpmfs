@@ -14,6 +14,7 @@ from pathlib import Path
 from argparse import ArgumentParser
 import stat
 import logging
+from enum import Enum
 import errno
 import pyfuse3
 #from pyfuse3 import FUSEError
@@ -28,6 +29,29 @@ else:
     faulthandler.enable()
 
 log = logging.getLogger(__name__)
+
+class Fields(Enum):
+    VERSION = 0
+    NAME = 1
+    DESC = 2
+    DB = 3
+    INSTALL = 4
+    BASE = 5
+
+    def ext(self):
+        return str(self.name).lower()
+
+    def set_filename(self, pkg):
+        """ virtual files : set file names """
+        data = f"{pkg.name}.{self.ext()}"
+        if self == self.VERSION:
+            data = f"{pkg.version}.{self.ext()}"
+        if self == self.BASE:
+            data = f"{pkg.db.name}.{self.ext()}"
+        if self == self.INSTALL:
+            label = "explicit" if pkg.reason == 0 else "asdependency"
+            data = f"{label}.{self.ext()}"
+        return data
 
 class AlpmFile():
     def __init__(self, pkg, inode):
@@ -63,6 +87,26 @@ class AlpmLocal():
         except IndexError:
             #raise pyfuse3.FUSEError(errno.ENOENT)
             return None # root ?
+
+    def display_file(self, node: AlpmLocal, field_id: int):
+        p = self.handle.get_localdb().get_pkg(node.name)
+
+        # for demo:
+        if field_id == Fields.VERSION.value:
+            return f"{p.version}\n"
+        #print(dir(p))
+        reason = ''
+        if p.reason == 0:
+            reason = 'Explicitly installed'
+        strtime = time.strftime("%a %d %b %Y %X %Z", time.localtime(p.installdate))
+
+        data = f"#{field_id}\n"
+        data = f"{data}\n{p.name}\n{p.version}\n{p.desc}\n{p.url}\n\ninstalldate: {strtime}\nDb: {p.db.name}\nInstall reason: {reason}\nDependencies: \n{p.depends}\n"
+        if  p.optdepends:
+            data += '\n optionals:'
+            for opt in p.optdepends:
+                data += f"\n\t{opt}"
+        return data
 
 class AlpmFs(pyfuse3.Operations):
     def __init__(self, path):
@@ -159,31 +203,15 @@ class AlpmFs(pyfuse3.Operations):
             offset = fh * 100000
             if start_id >= offset:
                 return
-            #print("create virtual files in", p.name)
-            if not pyfuse3.readdir_reply(token, f"{p.version}.version".encode(), await self.get_virtual_attr(fh, offset), offset):
-                return
-            offset += 1
-            if not pyfuse3.readdir_reply(token, f"{p.name}.name".encode(), await self.get_virtual_attr(fh, offset), offset):
-                return
-            offset += 1
-            if not pyfuse3.readdir_reply(token, f"{p.name}.description".encode(), await self.get_virtual_attr(fh, offset), offset):
-                return
-            # TOFIX : always local.db
-            offset += 1
-            if not pyfuse3.readdir_reply(token, f"{p.db.name}.db".encode(), await self.get_virtual_attr(fh, offset), offset):
-                return
-            offset += 1
-            label = "asdependency"
-            if p.reason == 0:
-                label = "explicit"
-            if not pyfuse3.readdir_reply(token, f"install.{label}".encode(), await self.get_virtual_attr(fh, offset), offset):
-                return
-            if p.base and p.base != p.name:
-                offset += 1
-                if not pyfuse3.readdir_reply(token, f"{p.base}.base".encode(), await self.get_virtual_attr(fh, offset), offset):
+            
+            # generate virtual files
+            for vfile in Fields:
+                fname = vfile.set_filename(p).encode()
+                if not pyfuse3.readdir_reply(token, fname, await self.get_virtual_attr(fh, offset), offset):
                     return
+                offset += 1
 
-            # create sumlinks : Dependencies (and optionals ?)
+            # generate symlinks : Dependencies (and optionals ?)
             for dep in p.depends:
                 deps = dep.split('>', 1)
                 link = self.packages.get_file(deps[:1][0])
@@ -221,32 +249,15 @@ class AlpmFs(pyfuse3.Operations):
         # TODO TO_FIX : read file only at first pass, second empty and 3° no acces !!!
         """
         print('v-read', inode, off, size)
-        """if off >= 2048:
-            print('   end of file ?',inode, 'start read at:', off)
-            return b'' """
         inode, field_id = self.virtual_inode(inode)
         print('   read real ', inode, 'field:', field_id, 'off', off, 'size', size)
-
 
         pkg = self.packages.get_inode(inode)
         if not pkg:
             print('   ERROR: file not found', inode)
-            return b'ERROR: package not found'
+            return b''
 
-        p = self.packages.handle.get_localdb().get_pkg(pkg.name)
-        #print(dir(p))
-        reason = ''
-        if p.reason == 0:
-            reason = 'Explicitly installed'
-        strtime = time.strftime("%a %d %b %Y %X %Z", time.localtime(p.installdate))
-
-        data = f"{p.name}\n{p.version}\n{p.desc}\n{p.url}\n\ninstalldate: {strtime}\nDb: {p.db.name}\nInstall reason: {reason}\nDependencies: \n{p.depends}\n"
-        if  p.optdepends:
-            data += '\n optionals:'
-            for opt in p.optdepends:
-                data += f"\n\t{opt}"
-
-        #print(data)
+        data = self.packages.display_file(pkg, field_id)
         data = data.encode()
         return data[off:off+size]
 
