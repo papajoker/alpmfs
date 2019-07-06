@@ -41,6 +41,7 @@ class Fields(Enum):
     DB = 4
     INSTALL = 5
     BASE = 6
+    URL = 7
 
     def ext(self):
         return str(self.name).lower()
@@ -76,6 +77,8 @@ class VirtualFile():
             return VirtualDirectory(field, node)
         if field == Fields.VERSION.value:
             return VirtualVersion(field, node)
+        if field == Fields.URL.value:
+            return VirtualUrl(field, node)
         return VirtualFile(field, node)
 
     @property
@@ -89,7 +92,7 @@ class VirtualFile():
         entry = pyfuse3.EntryAttributes()
         entry.st_size = 4000 # less that EntryAttributes.st_blksize 4096
         stamp = int(self.node.st_time)
-        entry.st_mode = (stat.S_IFREG | 0o644)
+        entry.st_mode = (stat.S_IFREG | 0o444)
         entry.st_atime_ns = stamp
         entry.st_ctime_ns = stamp
         entry.st_mtime_ns = stamp
@@ -126,10 +129,11 @@ class VirtualFile():
 
 
 class VirtualDirectory(VirtualFile):
+    """ for dolphin """
     @property
     def data(self):
-        icon = self.node.ico
-        return f"[Desktop Entry]\nIcon={icon}\n".encode()
+        return f"[Desktop Entry]\nIcon={self.node.ico}\n".encode()
+
     async def get_attr(self, inode, offset, ctx=None):
         entry = await super().get_attr(inode, offset, ctx)
         entry.st_size = 412
@@ -144,9 +148,26 @@ class VirtualVersion(VirtualFile):
     async def get_attr(self, inode, offset, ctx=None):
         entry = await super().get_attr(inode, offset, ctx)
         entry.st_size = 120
-        entry.st_mode = (stat.S_IFREG | 0o644)
+        entry.st_mode = (stat.S_IFREG | 0o444)
         return entry
 
+class VirtualUrl(VirtualFile):
+    """ for thunar """
+    @property
+    def data(self):
+        data = f"Name={self.pkg.name} url\nIcon={self.node.ico}\nTerminal=false\nType=Application\n" + \
+            f"Exec={self.get_default_browser()} \"{self.pkg.url}\""
+        return f"[Desktop Entry]\n{data}\n".encode()
+
+    @property
+    def filename(self):
+        return f"{self.node.name}.url.desktop"
+
+    async def get_attr(self, inode, offset, ctx=None):
+        entry = await super().get_attr(inode, offset, ctx)
+        entry.st_size = 1280
+        entry.st_mode = (stat.S_IFREG | 0o555)
+        return entry
 
 class AlpmFile():
     def __init__(self, pkg, inode, repo='local'):
@@ -325,6 +346,7 @@ class AlpmFs(pyfuse3.Operations):
                 virtual = VirtualFile.factory(vfile.value, node)
                 virtual.pkg = p
                 if vfile == Fields.BASE and p.name == p.base:
+                    offset += 1
                     continue
                 if not pyfuse3.readdir_reply(token, virtual.filename.encode(), await virtual.get_attr(fh, offset), offset):
                     return
