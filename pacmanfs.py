@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 '''
 pamac build python-pyfuse3 # 7 packages for 3.5 Mo
 run : 
@@ -32,19 +32,24 @@ else:
 log = logging.getLogger(__name__)
 
 class Fields(Enum):
-    VERSION = 0
-    NAME = 1
-    DESC = 2
-    DB = 3
-    INSTALL = 4
-    BASE = 5
+    """ Fields in Alpm class """
+    DIRECTORY = 0
+    VERSION = 1
+    NAME = 2
+    DESC = 3
+    DB = 4
+    INSTALL = 5
+    BASE = 6
 
     def ext(self):
         return str(self.name).lower()
 
     def set_filename(self, pkg, node):
         """ virtual files : set file names """
+        # TODO report in sub-class VirtualFile
         data = f"{pkg.name}.{self.ext()}"
+        if self == self.DIRECTORY:
+            data = f".{self.ext()}"
         if self == self.VERSION:
             data = f"{pkg.version}.{self.ext()}"
         if self == self.BASE:
@@ -55,6 +60,94 @@ class Fields(Enum):
             label = "explicit" if pkg.reason == 0 else "asdependency"
             data = f"{label}.{self.ext()}"
         return data
+
+
+class VirtualFile():
+    """ files in a package directory """
+    def __init__(self, field: Fields, node):
+        self.pkg = None
+        self.node = node
+        self.field = field
+
+    @classmethod
+    def factory(cls, field: Fields, node):
+        if field == Fields.DIRECTORY.value:
+            return VirtualDirectory(field, node)
+        if field == Fields.VERSION.value:
+            return VirtualVersion(field, node)
+        return VirtualFile(field, node)
+
+    @property
+    def filename(self):
+        """ virtual files : set file names """
+        #data = f"{self.pkg.name}.{Fields(self.field).ext()}"
+        data = Fields(self.field).set_filename(self.pkg, self.node)
+        return data
+
+    async def get_attr(self, inode, offset, ctx=None):
+        entry = pyfuse3.EntryAttributes()
+        entry.st_size = 4000 # less that EntryAttributes.st_blksize 4096
+        stamp = int(self.node.st_time)
+        entry.st_mode = (stat.S_IFREG | 0o644)
+        entry.st_atime_ns = stamp
+        entry.st_ctime_ns = stamp
+        entry.st_mtime_ns = stamp
+        entry.st_gid = os.getgid()
+        entry.st_uid = os.getuid()
+        entry.st_ino = offset
+        return entry
+
+    @staticmethod
+    def get_default_browser():
+        import webbrowser
+        return webbrowser.get().name
+
+    @property
+    def data(self):
+        """ content files """
+        # for demo:
+        if not self.pkg:
+            return ""
+
+        #print(dir(p))
+        reason = 'dependency'
+        if self.pkg.reason == 0:
+            reason = 'Explicitly installed'
+        strtime = time.strftime("%a %d %b %Y %X %Z", time.localtime(self.pkg.installdate))
+
+        data = f"#{self.field} {type(self).__name__}\n"
+        data = f"{data}\n{self.pkg.name}\n{self.pkg.version}\n{self.pkg.desc}\n{self.pkg.url}\n\ninstalldate: {strtime}\nDb: {self.node.repo}\nInstall reason: {reason}\nDependencies: \n{self.pkg.depends}\n"
+        if self.pkg.optdepends:
+            data += '\n optionals:'
+            for opt in self.pkg.optdepends:
+                data += f"\n\t{opt}"
+        return data.encode()
+
+
+class VirtualDirectory(VirtualFile):
+    @property
+    def data(self):
+        icon = "package"
+        # TODO : get icon in appstream-data
+        if self.field == Fields.DIRECTORY.value:
+            return f"[Desktop Entry]\nIcon={icon}\n".encode()
+    async def get_attr(self, inode, offset, ctx=None):
+        entry = await super().get_attr(inode, offset, ctx)
+        entry.st_size = 412
+        return entry
+
+
+class VirtualVersion(VirtualFile):
+    @property
+    def data(self):
+        return f"{self.pkg.version}\n".encode()
+
+    async def get_attr(self, inode, offset, ctx=None):
+        entry = await super().get_attr(inode, offset, ctx)
+        entry.st_size = 120
+        entry.st_mode = (stat.S_IFREG | 0o644)
+        return entry
+
 
 class AlpmFile():
     def __init__(self, pkg, inode, repo='local'):
@@ -69,6 +162,7 @@ class AlpmFile():
     @property
     def st_mode(self):
         return (stat.S_IFDIR | 0o555)
+
 
 class AlpmLocal():
     def __init__(self):
@@ -88,40 +182,21 @@ class AlpmLocal():
         return 'local'
 
     def get_inode(self, inode):
-        r = [f for f in self.pkgs if f.inode == inode]
+        nodes = [f for f in self.pkgs if f.inode == inode]
         try:
-            return r[0]
+            return nodes[0]
         except IndexError:
             #raise pyfuse3.FUSEError(errno.ENOENT)
             return None # root ?
 
     def get_file(self, filename):
-        r = [f for f in self.pkgs if f"{f.name}" == filename]
+        filenames = [f for f in self.pkgs if f"{f.name}" == filename]
         try:
-            return r[0]
+            return filenames[0]
         except IndexError:
             #raise pyfuse3.FUSEError(errno.ENOENT)
             return None # root ?
 
-    def display_file(self, node, field_id: int):
-        p = self.handle.get_localdb().get_pkg(node.name)
-
-        # for demo:
-        if field_id == Fields.VERSION.value:
-            return f"{p.version}\n"
-        #print(dir(p))
-        reason = 'dependency'
-        if p.reason == 0:
-            reason = 'Explicitly installed'
-        strtime = time.strftime("%a %d %b %Y %X %Z", time.localtime(p.installdate))
-
-        data = f"#{field_id}\n"
-        data = f"{data}\n{p.name}\n{p.version}\n{p.desc}\n{p.url}\n\ninstalldate: {strtime}\nDb: {node.repo}\nInstall reason: {reason}\nDependencies: \n{p.depends}\n"
-        if  p.optdepends:
-            data += '\n optionals:'
-            for opt in p.optdepends:
-                data += f"\n\t{opt}"
-        return data
 
 class AlpmFs(pyfuse3.Operations):
     def __init__(self, path):
@@ -140,12 +215,12 @@ class AlpmFs(pyfuse3.Operations):
             entry.st_size = 0
             stamp = int(time.time() * 1e9)
         else:
-            pkg = self.packages.get_inode(inode)
-            if not pkg:
+            node = self.packages.get_inode(inode)
+            if not node:
                 return entry
-            entry.st_mode = pkg.st_mode
-            entry.st_size = pkg.st_size
-            stamp = int(pkg.st_time)
+            entry.st_mode = node.st_mode
+            entry.st_size = node.st_size
+            stamp = int(node.st_time)
 
         entry.st_atime_ns = stamp
         entry.st_ctime_ns = stamp
@@ -159,19 +234,9 @@ class AlpmFs(pyfuse3.Operations):
         return entry
 
     async def get_virtual_attr(self, inode, offset, ctx=None):
-        entry = pyfuse3.EntryAttributes()
-        pkg = self.packages.get_inode(inode)
-        entry.st_size = 4000 # less that EntryAttributes.st_blksize 4096
-        stamp = int(pkg.st_time)
-        entry.st_mode = (stat.S_IFREG | 0o644)
-        entry.st_atime_ns = stamp
-        entry.st_ctime_ns = stamp
-        entry.st_mtime_ns = stamp
-        entry.st_gid = os.getgid()
-        entry.st_uid = os.getuid()
-        entry.st_ino = offset
-
-        return entry
+        node = self.packages.get_inode(inode)
+        virtual = VirtualFile.factory(offset % 20, node)
+        return await virtual.get_attr(inode, offset, ctx)
 
     async def lookup(self, parent_inode, name, ctx=None):
         """
@@ -198,33 +263,34 @@ class AlpmFs(pyfuse3.Operations):
         return inode
 
     async def readdir(self, fh, start_id, token):
-        pkg = self.packages.get_inode(start_id)
+        node = self.packages.get_inode(start_id)
         #print('readdir',fh, 'off', start_id)
         if fh == pyfuse3.ROOT_INODE:
-            for pkg in self.packages.pkgs:
-                if pkg.inode <= start_id:
+            for node in self.packages.pkgs:
+                if node.inode <= start_id:
                     continue
-                name = f"{pkg.name}"
-                if not pyfuse3.readdir_reply(token, f"{name}".encode(), await self.getattr(pkg.inode), pkg.inode):
+                name = f"{node.name}"
+                if not pyfuse3.readdir_reply(token, f"{name}".encode(), await self.getattr(node.inode), node.inode):
                     break
         else:
-            pkg = self.packages.get_inode(fh)
-            if not pkg:
+            node = self.packages.get_inode(fh)
+            if not node:
                 return
             #else:
             #    print('  node name', fh, pkg.name, 'offset:',start_id)
             # yay = 1198
-            p = self.packages.handle.get_localdb().get_pkg(pkg.name)
+            p = self.packages.handle.get_localdb().get_pkg(node.name)
             offset = fh * 100000
             if start_id >= offset:
                 return
 
             # generate virtual files
             for vfile in Fields:
+                virtual = VirtualFile.factory(vfile.value, node)
+                virtual.pkg = p
                 if vfile == Fields.BASE and p.name == p.base:
                     continue
-                fname = vfile.set_filename(p, pkg).encode()
-                if not pyfuse3.readdir_reply(token, fname, await self.get_virtual_attr(fh, offset), offset):
+                if not pyfuse3.readdir_reply(token, virtual.filename.encode(), await virtual.get_attr(fh, offset), offset):
                     return
                 offset += 1
 
@@ -246,36 +312,36 @@ class AlpmFs(pyfuse3.Operations):
 
     async def readlink(self, inode, ctx):
         """ set target to link """
-        pkg = self.packages.get_inode(inode)
-        if pkg:
-            return f"{self.path}/{pkg.name}".encode()
+        node = self.packages.get_inode(inode)
+        if node:
+            return f"{self.path}/{node.name}".encode()
         raise pyfuse3.FUSEError(errno.ENOENT)
 
     @staticmethod
     def virtual_inode(inode):
         """ convert inode by inode_parent_package + field_id """
         if inode > 90000:
-            return round(inode/100000), int(inode - (round(inode/100000)*100000))
+            return round(inode/100000), int(inode % 20)
         return inode, None
 
     async def read(self, inode, off, size):
         """
         TODO: best display
         view for fields /usr/lib/python3.7/site-packages/pycman/pkginfo.py
-        # TO_FIX : always local.db
-        # TODO TO_FIX : read file only at first pass, second empty and 3° no acces !!!
         """
         #log.info(f"v-read: inode:{inode} {off} {size}")
         inode, field_id = self.virtual_inode(inode)
         #log.info(f"   read real {inode} field:{field_id} off:{off} size:{size}")
 
-        pkg = self.packages.get_inode(inode)
-        if not pkg:
+        node = self.packages.get_inode(inode)
+        if not node:
             #log.warning(f"   ERROR: file not found {inode}")
             return b''
 
-        data = self.packages.display_file(pkg, field_id)
-        data = data.encode()
+        virtual = VirtualFile.factory(field_id, node)
+        virtual.pkg = self.packages.handle.get_localdb().get_pkg(node.name)
+        data = virtual.data
+
         return data[off:off+size]
 
     async def open(self, inode, flags, ctx):
