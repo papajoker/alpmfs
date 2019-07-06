@@ -29,6 +29,7 @@ except ImportError:
 else:
     faulthandler.enable()
 
+
 log = logging.getLogger(__name__)
 
 class Fields(Enum):
@@ -127,10 +128,8 @@ class VirtualFile():
 class VirtualDirectory(VirtualFile):
     @property
     def data(self):
-        icon = "package"
-        # TODO : get icon in appstream-data
-        if self.field == Fields.DIRECTORY.value:
-            return f"[Desktop Entry]\nIcon={icon}\n".encode()
+        icon = self.node.ico
+        return f"[Desktop Entry]\nIcon={icon}\n".encode()
     async def get_attr(self, inode, offset, ctx=None):
         entry = await super().get_attr(inode, offset, ctx)
         entry.st_size = 412
@@ -157,6 +156,7 @@ class AlpmFile():
         self.st_size = pkg.isize
         self.inode = pyfuse3.ROOT_INODE + inode +1
         self.st_nlink = 0
+        self.ico = "package"
         #print(self.repo)
 
     @property
@@ -166,12 +166,48 @@ class AlpmFile():
 
 class AlpmLocal():
     def __init__(self):
+        #  /usr/share/gir-1.0/AppStreamGlib-1.0.gir
+        try:
+            import gi
+            gi.require_version('AppStreamGlib', '1.0')
+            from gi.repository import AppStreamGlib
+            app_store = AppStreamGlib.Store()
+            app_store.load(flags=AppStreamGlib.StoreLoadFlags.APP_INFO_SYSTEM);
+            app_store.set_search_match(AppStreamGlib.AppSearchMatch.PKGNAME | AppStreamGlib.AppSearchMatch.NAME |  AppStreamGlib.AppSearchMatch.KEYWORD);
+        except ValueError:
+            app_store = None
+
+        def _app_store_ico(tofind):
+            """ find app in store
+            It's very slow ...
+            """
+            default = "package"
+            for app in app_store.get_apps():
+                if app.get_kind() != AppStreamGlib.AppKind.DESKTOP:
+                    continue
+                if app.get_pkgname_default() == tofind:
+                    #print(f"-- AppStream trouvé -- {tofind}")
+                    # FIX entries errors
+                    iname = app.get_icon_default().get_name()
+                    if not ".png" in iname:
+                        iname = f"{app.get_pkgname_default()}_{iname}.png"
+                    icon = f"{app.get_icon_path()}/64x64/{iname}"
+                    if not Path(icon).exists():
+                        print(f"  bad ico ? {icon} {app.get_icon_default().get_name()}")
+                        icon = default
+                    return icon
+            return default
+
         #self.handle = Handle('/', '/var/lib/pacman')
         self.handle = config.init_with_config("/etc/pacman.conf")
         self.pkgs = []
         for i, pkg in enumerate(self.handle.get_localdb().pkgcache):
             pkg_repo = self._find(pkg.name)
-            self.pkgs.append(AlpmFile(pkg, i, pkg_repo))
+            afile = AlpmFile(pkg, i, pkg_repo)
+            if app_store:
+                afile.ico = _app_store_ico(pkg.name)
+            self.pkgs.append(afile)
+        print(f"end scan {len(self.pkgs)} packages")
 
     def _find(self, pkg_name):
         """find one package in db"""
