@@ -31,37 +31,22 @@ else:
 
 
 log = logging.getLogger(__name__)
+USE_APPSTREAM = True
 
 class Fields(Enum):
     """ Fields in Alpm class """
     DIRECTORY = 0
     VERSION = 1
-    NAME = 2
+    PACKAGER = 2
     DESC = 3
     DB = 4
     INSTALL = 5
     BASE = 6
     URL = 7
+    BACKUP = 8
 
     def ext(self):
         return str(self.name).lower()
-
-    def set_filename(self, pkg, node):
-        """ virtual files : set file names """
-        # TODO report in sub-class VirtualFile
-        data = f"{pkg.name}.{self.ext()}"
-        if self == self.DIRECTORY:
-            data = f".{self.ext()}"
-        if self == self.VERSION:
-            data = f"{pkg.version}.{self.ext()}"
-        if self == self.BASE:
-            data = f"{pkg.base}.{self.ext()}"
-        if self == self.DB:
-            data = f"{node.repo}.{self.ext()}"
-        if self == self.INSTALL:
-            label = "explicit" if pkg.reason == 0 else "asdependency"
-            data = f"{label}.{self.ext()}"
-        return data
 
 
 class VirtualFile():
@@ -73,19 +58,14 @@ class VirtualFile():
 
     @classmethod
     def factory(cls, field: Fields, node):
-        if field == Fields.DIRECTORY.value:
-            return VirtualDirectory(field, node)
-        if field == Fields.VERSION.value:
-            return VirtualVersion(field, node)
-        if field == Fields.URL.value:
-            return VirtualUrl(field, node)
-        return VirtualFile(field, node)
+        fclass = globals()[f"Virtual{Fields(field).name.capitalize()}"]
+        return fclass(field, node)
 
     @property
     def filename(self):
         """ virtual files : set file names """
-        #data = f"{self.pkg.name}.{Fields(self.field).ext()}"
-        data = Fields(self.field).set_filename(self.pkg, self.node)
+        data = f"{self.pkg.name}.{Fields(self.field).ext()}"
+        #data = Fields(self.field).set_filename(self.pkg, self.node)
         return data
 
     async def get_attr(self, inode, offset, ctx=None):
@@ -109,6 +89,10 @@ class VirtualFile():
     @property
     def data(self):
         """ content files """
+        """
+        TODO: best display
+        view for fields /usr/lib/python3.7/site-packages/pycman/pkginfo.py
+        """
         # for demo:
         if not self.pkg:
             return ""
@@ -119,14 +103,29 @@ class VirtualFile():
             reason = 'Explicitly installed'
         strtime = time.strftime("%a %d %b %Y %X %Z", time.localtime(self.pkg.installdate))
 
-        data = f"#{self.field} {type(self).__name__}\n"
-        data = f"{data}\n{self.pkg.name}\n{self.pkg.version}\n{self.pkg.desc}\n{self.pkg.url}\n\ninstalldate: {strtime}\nDb: {self.node.repo}\nInstall reason: {reason}\nDependencies: \n{self.pkg.depends}\n"
+        #data = f"#{self.field} {type(self).__name__}\n"
+        data = f"{self.pkg.name}\n{self.pkg.version}\n{self.pkg.desc}\n{self.pkg.url}\n\ninstalldate: {strtime}\n" + \
+            f"Db: {self.node.repo}\nInstall reason: {reason}\nDependencies: \n{self.pkg.depends}\n"
         if self.pkg.optdepends:
-            data += '\n optionals:'
+            data += '\nOptionals:'
             for opt in self.pkg.optdepends:
                 data += f"\n\t{opt}"
+        if self.pkg.backup:
+            data += "\n\nBackups:"
+            for backup in self.pkg.backup:
+                data += f"\n\t/{backup[0]}"
         return data.encode()
 
+class VirtualFileEmpty(VirtualFile):
+    @property
+    def data(self):
+        return b""
+
+    async def get_attr(self, inode, offset, ctx=None):
+        entry = await super().get_attr(inode, offset, ctx)
+        entry.st_size = 0
+        entry.st_mode = (stat.S_IFREG | 0o444)
+        return entry
 
 class VirtualDirectory(VirtualFile):
     """ for dolphin """
@@ -134,22 +133,37 @@ class VirtualDirectory(VirtualFile):
     def data(self):
         return f"[Desktop Entry]\nIcon={self.node.ico}\n".encode()
 
+    @property
+    def filename(self):
+        return ".directory"
+
     async def get_attr(self, inode, offset, ctx=None):
         entry = await super().get_attr(inode, offset, ctx)
         entry.st_size = 412
         return entry
 
 
+class VirtualDesc(VirtualFile):
+    @property
+    def filename(self):
+        return f"{self.node.name}.txt"
+
+
 class VirtualVersion(VirtualFile):
     @property
     def data(self):
-        return f"{self.pkg.version}\n".encode()
+        return f"{self.pkg.version}".encode()
+
+    @property
+    def filename(self):
+        return f"{self.pkg.version}.version"
 
     async def get_attr(self, inode, offset, ctx=None):
         entry = await super().get_attr(inode, offset, ctx)
         entry.st_size = 120
         entry.st_mode = (stat.S_IFREG | 0o444)
         return entry
+
 
 class VirtualUrl(VirtualFile):
     """ for thunar """
@@ -161,12 +175,82 @@ class VirtualUrl(VirtualFile):
 
     @property
     def filename(self):
-        return f"{self.node.name}.url.desktop"
+        return "url.desktop"
 
     async def get_attr(self, inode, offset, ctx=None):
         entry = await super().get_attr(inode, offset, ctx)
         entry.st_size = 1280
         entry.st_mode = (stat.S_IFREG | 0o555)
+        return entry
+
+
+class VirtualPackager(VirtualFile):
+    @property
+    def filename(self):
+        try:
+            label = self.pkg.packager.split('<')[0:][0]
+        except IndexError:
+            label = self.pkg.packager
+        return f"{label.strip()}.packager"
+
+    @property
+    def data(self):
+        return f"{self.pkg.packager}".encode()
+
+    async def get_attr(self, inode, offset, ctx=None):
+        entry = await super().get_attr(inode, offset, ctx)
+        entry.st_size = 256
+        entry.st_mode = (stat.S_IFREG | 0o555)
+        return entry
+
+class VirtualDb(VirtualFileEmpty):
+    @property
+    def filename(self):
+        return f"{self.node.repo}.db"
+
+
+class VirtualInstall(VirtualFileEmpty):
+    @property
+    def filename(self):
+        label = "explicit" if self.pkg.reason == 0 else "asdependency"
+        return f"{label}.install"
+
+
+class VirtualBase(VirtualFileEmpty):
+    @property
+    def filename(self):
+        label = "explicit" if self.pkg.reason == 0 else "asdependency"
+        return f"{self.pkg.base}.base"
+
+class VirtualBackup(VirtualFile):
+    def get_backup_filename(self):
+        if self.pkg:
+            for backup in self.pkg.backup:
+                return f"/{backup[0]}"
+        return None
+
+    @property
+    def data(self):
+        filename = self.get_backup_filename()
+        if not filename:
+            return b""
+        try:
+            with open(filename, 'rb') as bfile:
+                data = bfile.read()
+                return data
+        except PermissionError:
+            return b""
+
+    @property
+    def filename(self):
+        label = self.get_backup_filename().replace('/',' ')
+        return f"{label[1:]}.backup"
+
+    async def get_attr(self, inode, offset, ctx=None):
+        filename = self.get_backup_filename()
+        entry = await super().get_attr(inode, offset, ctx)
+        if filename:
+            entry.st_size = os.stat(filename).st_size
         return entry
 
 class AlpmFile():
@@ -189,6 +273,8 @@ class AlpmLocal():
     def __init__(self):
         #  /usr/share/gir-1.0/AppStreamGlib-1.0.gir
         try:
+            if not USE_APPSTREAM:
+                raise ValueError
             import gi
             gi.require_version('AppStreamGlib', '1.0')
             from gi.repository import AppStreamGlib
@@ -301,10 +387,7 @@ class AlpmFs(pyfuse3.Operations):
             and symlinks !
         """
         name = Path(name.decode())
-        '''if parent_inode > 1:
-            inode, field_id = self.virtual_inode(parent_inode)
-            print('vinode', inode, 'field', field_id)'''
-        if parent_inode > 1 and name.suffix == ".dep":
+        if parent_inode > 1 and (name.suffix in [".dep"]):
             name = name.stem
             #print('   lookup symlink ', parent_inode, name)
         pkg = self.packages.get_file(str(name))
@@ -348,6 +431,9 @@ class AlpmFs(pyfuse3.Operations):
                 if vfile == Fields.BASE and p.name == p.base:
                     offset += 1
                     continue
+                if vfile == Fields.BACKUP and not p.backup:
+                    offset += 1
+                    continue
                 if not pyfuse3.readdir_reply(token, virtual.filename.encode(), await virtual.get_attr(fh, offset), offset):
                     return
                 offset += 1
@@ -383,10 +469,7 @@ class AlpmFs(pyfuse3.Operations):
         return inode, None
 
     async def read(self, inode, off, size):
-        """
-        TODO: best display
-        view for fields /usr/lib/python3.7/site-packages/pycman/pkginfo.py
-        """
+        """ read content virtual file """
         #log.info(f"v-read: inode:{inode} {off} {size}")
         inode, field_id = self.virtual_inode(inode)
         #log.info(f"   read real {inode} field:{field_id} off:{off} size:{size}")
@@ -441,6 +524,8 @@ def parse_args():
 
     parser.add_argument('mountpoint', type=str,
                         help='Where to mount the file system')
+    parser.add_argument('--no-appstream', action='store_true', default=False,
+                        help='Not use AppStream')
     parser.add_argument('--debug', action='store_true', default=False,
                         help='Enable debugging output')
     parser.add_argument('--debug-fuse', action='store_true', default=False,
@@ -451,6 +536,10 @@ def parse_args():
 def main():
     """ fuse mount """
     options = parse_args()
+    print(options)
+    global USE_APPSTREAM
+    USE_APPSTREAM = not options.no_appstream
+
     init_logging(options.debug)
     fuse_options = set(pyfuse3.default_options)
     if options.debug_fuse:
