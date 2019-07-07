@@ -61,6 +61,10 @@ class VirtualFile():
         fclass = globals()[f"Virtual{Fields(field).name.capitalize()}"]
         return fclass(field, node)
 
+    def readdir_reply(self, token, datas, inode):
+        """ add one entry in package virtual directory """
+        return pyfuse3.readdir_reply(token, self.filename.encode(), datas, inode)
+
     @property
     def filename(self):
         """ virtual files : set file names """
@@ -222,12 +226,22 @@ class VirtualBase(VirtualFileEmpty):
         label = "explicit" if self.pkg.reason == 0 else "asdependency"
         return f"{self.pkg.base}.base"
 
+    def readdir_reply(self, token, datas, inode):
+        if self.pkg.name == self.pkg.base:
+            return True
+        return super().readdir_reply(token, datas, inode)
+
 class VirtualBackup(VirtualFile):
     def get_backup_filename(self):
         if self.pkg:
             for backup in self.pkg.backup:
                 return f"/{backup[0]}"
         return None
+
+    def readdir_reply(self, token, datas, inode):
+        if not self.pkg.backup:
+            return True
+        return super().readdir_reply(token, datas, inode)
 
     @property
     def data(self):
@@ -392,10 +406,7 @@ class AlpmFs(pyfuse3.Operations):
             #print('   lookup symlink ', parent_inode, name)
         pkg = self.packages.get_file(str(name))
         if not pkg:
-            '''print("   not found !!!", name)
-            entry = pyfuse3.EntryAttributes()
-            entry.st_ino = 0
-            return entry'''
+            '''print("   not found !!!", name)'''
             raise pyfuse3.FUSEError(errno.ENOENT)
         return await self.getattr(pkg.inode)
 
@@ -426,17 +437,11 @@ class AlpmFs(pyfuse3.Operations):
 
             # generate virtual files
             for vfile in Fields:
+                offset = (fh * 100000) + vfile.value
                 virtual = VirtualFile.factory(vfile.value, node)
                 virtual.pkg = p
-                if vfile == Fields.BASE and p.name == p.base:
-                    offset += 1
-                    continue
-                if vfile == Fields.BACKUP and not p.backup:
-                    offset += 1
-                    continue
-                if not pyfuse3.readdir_reply(token, virtual.filename.encode(), await virtual.get_attr(fh, offset), offset):
+                if not virtual.readdir_reply(token, await virtual.get_attr(fh, offset), offset):
                     return
-                offset += 1
 
             # generate symlinks : Dependencies (and optionals ?)
             for dep in p.depends:
@@ -448,7 +453,6 @@ class AlpmFs(pyfuse3.Operations):
                 mode = await self.getattr(link.inode)
                 mode.st_mode = (stat.S_IFLNK | 0o555)
                 mode.st_nlink = link.inode
-                #link.st_nlink += 1 # NO ! increment at all directory read !
                 if not pyfuse3.readdir_reply(token, f"{link.name}.dep".encode(), mode, offset):
                     return
 
