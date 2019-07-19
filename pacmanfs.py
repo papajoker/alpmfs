@@ -331,7 +331,8 @@ class AlpmLocal():
         print(f"end scan {len(self.pkgs)} packages")
 
     def _find(self, pkg_name):
-        """find one package in db"""
+        """find one package in db
+            :return Alpm object"""
         for db_repo in self.handle.get_syncdbs():
             pkg = db_repo.get_pkg(pkg_name)
             if pkg:
@@ -339,6 +340,8 @@ class AlpmLocal():
         return 'local'
 
     def get_inode(self, inode):
+        """ find one package by inode
+            :return node """
         nodes = [f for f in self.pkgs if f.inode == inode]
         try:
             return nodes[0]
@@ -346,13 +349,15 @@ class AlpmLocal():
             #raise pyfuse3.FUSEError(errno.ENOENT)
             return None # root ?
 
-    def get_file(self, filename):
-        filenames = [f for f in self.pkgs if f"{f.name}" == filename]
+    def get_file(self, pkgname):
+        """ find one package by name
+            :return node """
+        pkgnames = [f for f in self.pkgs if f"{f.name}" == pkgname]
         try:
-            return filenames[0]
+            return pkgnames[0]
         except IndexError:
             #raise pyfuse3.FUSEError(errno.ENOENT)
-            return None # root ?
+            return None
 
 
 class AlpmFs(pyfuse3.Operations):
@@ -360,6 +365,8 @@ class AlpmFs(pyfuse3.Operations):
         self.path = path
         self.packages = AlpmLocal()
         super(AlpmFs, self).__init__()
+        self.supports_dot_lookup = False
+        self.enable_writeback_cache = False
 
     async def getattr(self, inode, ctx=None):
         """ return file attributes """
@@ -400,21 +407,25 @@ class AlpmFs(pyfuse3.Operations):
             .git .gitignore .directory ...
             and symlinks !
         """
+        if name.decode() == "libxinerama":
+            print("\n :::::::::", name, "node parent:", parent_inode)
         name = Path(name.decode())
         if parent_inode > 1 and (name.suffix in [".dep"]):
             name = name.stem
-            #print('   lookup symlink ', parent_inode, name)
-        pkg = self.packages.get_file(str(name))
-        if not pkg:
-            '''print("   not found !!!", name)'''
+            if (name.endswith(".optional")):
+                name = Path(name).stem
+            print(f"   lookup symlink {parent_inode} {name}")
+        node = self.packages.get_file(str(name))
+        if not node:
+            #print("   not found !!!", name)
             raise pyfuse3.FUSEError(errno.ENOENT)
-        return await self.getattr(pkg.inode)
+        return await self.getattr(node.inode)
 
     async def opendir(self, inode, ctx):
         return inode
 
     async def readdir(self, fh, start_id, token):
-        node = self.packages.get_inode(start_id)
+        #node = self.packages.get_inode(start_id)
         #print('readdir',fh, 'off', start_id)
         if fh == pyfuse3.ROOT_INODE:
             for node in self.packages.pkgs:
@@ -427,9 +438,10 @@ class AlpmFs(pyfuse3.Operations):
             node = self.packages.get_inode(fh)
             if not node:
                 return
-            #else:
-            #    print('  node name', fh, pkg.name, 'offset:',start_id)
-            # yay = 1198
+            
+            DEBUGPKGNAME="vlc"
+            if node.name == DEBUGPKGNAME:
+                print('  node name', fh, node.name, 'offset:', start_id)
             p = self.packages.handle.get_localdb().get_pkg(node.name)
             offset = fh * 100000
             if start_id >= offset:
@@ -444,18 +456,45 @@ class AlpmFs(pyfuse3.Operations):
                     return
 
             # generate symlinks : Dependencies (and optionals ?)
+            # BUG TODO readdir_reply return false after 16 links !!!
+            offset += 10
+            i = 0 # count bug -> stop always at 17 !!! (vlc, gimp ...)
             for dep in p.depends:
                 deps = dep.split('>', 1)
-                link = self.packages.get_file(deps[:1][0])
-                if not link:
+                linknode = self.packages.get_file(deps[:1][0])
+                if not linknode:
                     return
                 offset += 1
-                mode = await self.getattr(link.inode)
+                mode = await self.getattr(linknode.inode)
                 mode.st_mode = (stat.S_IFLNK | 0o555)
-                mode.st_nlink = link.inode
-                if not pyfuse3.readdir_reply(token, f"{link.name}.dep".encode(), mode, offset):
+                mode.st_nlink = linknode.inode
+                if node.name == DEBUGPKGNAME:
+                    print('  link create dep for:', node.name, offset, 'target:', linknode.name, linknode.inode)
+                if not pyfuse3.readdir_reply(token, f"{linknode.name}.dep".encode(), mode, offset):
+                    print(dir(token))
+                    print(f"ERROR readdir_reply ({i} , {token}) link: {linknode.name} inode: {offset} mode_ino: {mode.st_ino} {mode}")
                     return
-
+                i += 1
+            
+            if node.name == DEBUGPKGNAME:
+                print("optionals:", offset, p.optdepends)
+            for dep in p.optdepends:
+                if node.name == DEBUGPKGNAME:
+                    print(" ? opt:", dep, "->", dep.split(':', 1)[:1][0] )
+                linknode = self.packages.get_file(dep.split(':', 1)[:1][0])
+                if not linknode:
+                    return
+                offset += 1
+                mode = await self.getattr(linknode.inode)
+                mode.st_mode = (stat.S_IFLNK | 0o555)
+                mode.st_nlink = linknode.inode
+                if node.name == DEBUGPKGNAME:
+                    print('  link create opt dep for:', node.name, offset, 'target:', linknode.name, linknode.inode)
+                if not pyfuse3.readdir_reply(token, f"{linknode.name}.optional.dep".encode(), mode, offset):
+                    print(f"ERROR readdir_reply optional link: {linknode.name} inode: {offset}")
+                    return
+                #pkg = self.packages.handle.get_localdb().get_pkg(dep)
+                
         return
 
     async def readlink(self, inode, ctx):
@@ -540,7 +579,6 @@ def parse_args():
 def main():
     """ fuse mount """
     options = parse_args()
-    print(options)
     global USE_APPSTREAM
     USE_APPSTREAM = not options.no_appstream
 
